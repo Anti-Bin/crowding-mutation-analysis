@@ -26,7 +26,7 @@ The pipeline performs:
 | bedtools | ≥2.30 | `conda install -c bioconda bedtools` |
 | vt | ≥0.577 | `conda install -c bioconda vt` |
 | bcftools | ≥1.13 | `conda install -c bioconda bcftools` |
-| gzip  | ≥1.10 | `sudo apt install gzip` |
+| gunzip  | ≥1.10 | `sudo apt install gunzip` |
 
 
 
