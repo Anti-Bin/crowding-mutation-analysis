@@ -19,7 +19,7 @@ set +e
 # --------------------------- CONFIG --------------------------
 GENOME="/path/to/WBcel235.fa"
 ORIGINAL_VCF_DIR="/path/to/original-vcf-files"
-ANNOTATION_DIR="/path/to/original/anno"
+ANNOTATION_DIR="/path/to/original-annotation-files"
 SCRIPT="/path/to/perl_code"
 THREADS=4
 
