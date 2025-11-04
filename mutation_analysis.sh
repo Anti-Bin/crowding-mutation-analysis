@@ -138,7 +138,7 @@ cd ..
 
 # ---------------- Unique variant filtering ------------------
 echo "Removing variants reported in corresponding F1..."
-cd vcf_decom
+cd ..
 ls cpr-4*.decompose_normalize.vcf | while read id; do
     base=${id%%.*}
     grep "^#" "$id" > uniq/${base}.3.uniq.homodel.vcf
