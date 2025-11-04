@@ -42,7 +42,6 @@ mkdir -p 3bp_3homodel \
 echo "Extracting ±3bp FASTA sequences around variants..."
 for id in *.vcf; do
     [[ -e "$id" ]] || { echo "No VCF files found!"; break; }
-    ...
 done
 ls *.vcf | while read id; do
     perl -F"\t" -lane '
