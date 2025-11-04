@@ -18,15 +18,18 @@ set +e
 
 # --------------------------- CONFIG --------------------------
 GENOME="/path/to/WBcel235.fa"
-ORIGINAL_VCF_DIR="/path/to/original"
+ORIGINAL_VCF_DIR="/path/to/original-vcf-files"
 ANNOTATION_DIR="/path/to/original/anno"
 SCRIPT="/path/to/perl_code"
 THREADS=4
 
 # ------------------------ PREPARATION -------------------------
 mkdir -p 3bp_3homodel \
-    3bp_3homodel/count \
     3bp_3homodel/vcf_decom \
+    3bp_3homodel/vcf_decom/decom_format \
+    3bp_3homodel/vcf_decom/decom_format/count \
+    3bp_3homodel/vcf_decom/decom_format/anno  \
+    3bp_3homodel/vcf_decom/decom_format/anno/count  \
     3bp_3homodel/vcf_decom/uniq \
     3bp_3homodel/vcf_decom/uniq/homodel_uniq_format \
     3bp_3homodel/vcf_decom/uniq/homodel_uniq_format/merge \
@@ -35,7 +38,7 @@ mkdir -p 3bp_3homodel \
     3bp_3homodel/vcf_decom/uniq/homodel_uniq_format/specific/anno \
     3bp_3homodel/vcf_decom/uniq/homodel_uniq_format/specific/anno/count
 
-# -------------------- 1. Extract 3bp sequences ----------------
+# -------------------- Extract 3bp sequences ----------------
 echo "Extracting ±3bp FASTA sequences around variants..."
 for id in *.vcf; do
     [[ -e "$id" ]] || { echo "No VCF files found!"; break; }
@@ -54,14 +57,11 @@ ls *.vcf | while read id; do
                       -fo 3bp_3homodel/${id%%.*}.3.fa.bed -tab
 done
 
-# --------------- 2. Remove 3+ homopolymer sequences ------------
+# --------------- Remove 3+ homopolymer sequences ------------
 echo "Filtering variants from 3+ homopolymer sequences..."
 cd 3bp_3homodel
 for id in *.3.fa.bed; do
     base=${id%%.*}
-    echo -ne "${base}\t" >> count/3homo_del_3bp
-    awk '$2 !~ /AAA|TTT|CCC|GGG/' "$id" | wc -l >> count/3homo_del_3bp
-
     awk '$2 !~ /AAA|TTT|CCC|GGG/' "$id" > ${base}_3bp_3homodel.bed
     awk 'FNR==NR {a[$1]=$2; next} ($5 in a) {print}' \
         ${base}_3bp_3homodel.bed ${base}.3.bed \
@@ -73,7 +73,7 @@ for id in *.3.fa.bed; do
         >> ${base}.3bp.3homodel.vcf
 done
 
-# ---------------- 3. Variant decomposition ---------------------
+# ---------------- Variant decomposition ---------------------
 echo "Decomposing and normalizing variants..."
 ls *.vcf | while read id; do
     vt decompose -s -o vcf_decom/${id%%.*}.decompose.vcf "$id"
@@ -82,7 +82,61 @@ ls *.vcf | while read id; do
         vcf_decom/${id%%.*}.decompose.vcf
 done
 
-# ---------------- 4. Unique variant filtering ------------------
+# ---------------- Export decomposed info -------------------
+echo "Exporting decomposed query info"
+cd vcf_decom
+for id in *.decompose_normalize.vcf; do
+    base=${id%%.*}
+    bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%QUAL\t%AF\t%DP\t%AO\t%TYPE\n' "$id" \
+        > decom_format/1.temp
+
+    perl -lane 'unless(/^#/){$F[7]=~s/(.*)TYPE=(\w*)(.*)/$2/; print uc($F[7])}' "$id" \
+        > decom_format/2.temp
+
+    paste -d"\t" decom_format/1.temp decom_format/2.temp \
+        > decom_format/${base}.formatted
+
+    rm decom_format/1.temp decom_format/2.temp
+done
+
+# ---------------- Count total filtered variants ------------
+echo "Counting filtered total variants"
+cd decom_format
+for id in *.formatted; do
+    base=${id%%.*}
+    echo -ne "${base}\t" >> count/maf0.2_Q25_DP30_total_variants
+    awk '{if ($6>=0.2 && $5>=25 && $7<=30 && $7>=5) print}' "$id" | wc -l \
+        >> count/maf0.2_Q25_DP30_total_variants
+done
+
+# ---------------- Correct index for annotation -------------
+for id in *.formatted; do
+    base=${id%%.*}
+    awk -F'\t' '{
+        if ($10=="DEL" || $10=="INS") print $0"\t"$2+1"\t"$10;
+        else if ($10=="SNP") print $0"\t"$2"\tSNV";
+        else print $0"\t"$2"\tMNV";
+    }' "$id" > anno/${base}.corr
+done
+
+# ---------------- Annotation of total variants -------------
+echo "Annotating total variants"
+cd anno
+for id in *.corr; do
+    base=${id%%.*}
+    awk -F'\t' 'FNR==NR {
+        a[$3"_"$4"_"$6]=$7"\t"$8"\t"$9"\t"$10; next
+    } ($1"_"$11"_"$12 in a) {print $0"\t"a[$1"_"$11"_"$12]}' \
+        "$ANNOTATION_DIR/${base}.decompose_normalize_annot.tsv" "$id" \
+        > ${base}.anno
+
+    perl "$SCRIPT"/anno_CDS.pl ${base}.anno ${base}.count_AF0.2_Q25_DP30_homo
+    awk -v id=${base} '{print id "\t" $0}' ${base}.count_AF0.2_Q25_DP30_homo \
+        >> count/CDS_count_AF0.2_Q25_DP30_homo
+done
+cd ..
+
+# ---------------- Unique variant filtering ------------------
 echo "Removing variants reported in corresponding F1..."
 cd vcf_decom
 ls cpr-4*.decompose_normalize.vcf | while read id; do
@@ -101,7 +155,7 @@ ls N2*.decompose_normalize.vcf | while read id; do
         >> uniq/${base}.3.uniq.homodel.vcf
 done
 
-# ---------------- 5. Export query information ------------------
+# ---------------- Export query information ------------------
 echo "Extracting query fields using bcftools..."
 cd uniq
 ls *.vcf | while read id; do
@@ -118,7 +172,7 @@ ls *.vcf | while read id; do
     rm homodel_uniq_format/1.temp homodel_uniq_format/2.temp
 done
 
-# ---------------- 6. Merge and find common variants ------------
+# ---------------- Merge and find common variants ------------
 echo "Merging and identifying common variants..."
 cd homodel_uniq_format
 cat cpr-4_C* | sort | uniq > merge/cpr-4_10C.uniq
@@ -132,7 +186,7 @@ awk 'FNR==NR {a[$1_$2_$3_$4]; next} $1_$2_$3_$4 in a {print}' \
 awk 'FNR==NR {a[$1_$2_$3_$4]; next} $1_$2_$3_$4 in a {print}' \
     merge/cpr-4_10N.uniq merge/cpr-4_10C.uniq > merge/cpr-4_10C_10N.common
 
-# ------------ 7. Remove variants from contrary group ------------
+# ------------ Remove variants from contrary group ------------
 echo "Identifying group-specific variants..."
 ls cpr-4_*_10* | while read id; do
     base=${id%%.*}
@@ -148,7 +202,7 @@ ls *N2_*_10* | while read id; do
         > specific/${base}.homodel_uniq_specific
 done
 
-# ---------------- 8. Count variant quality metrics -------------
+# ---------------- Count variant quality metrics -------------
 echo "Counting filtered variants..."
 cd specific
 ls *_specific | while read id; do
@@ -158,7 +212,7 @@ ls *_specific | while read id; do
         >> count/maf0.2_Q25_DP30_filter
 done
 
-# ---------------- 9. Count variant types -----------------------
+# ---------------- Count variant types -----------------------
 echo "Counting variant types..."
 ls *_specific | while read id; do
     base=${id%%.*}
@@ -169,7 +223,7 @@ ls *_specific | while read id; do
     done
 done
 
-# ---------------- 10. SNP subclassification --------------------
+# ---------------- SNP subclassification --------------------
 echo "Counting six SNP substitution types..."
 for id in *_specific; do
     base=${id%%.*}
@@ -198,7 +252,7 @@ for id in *.snp_0.2_Q25_DP30_homo; do
     }' "$id" >> count/SNP_change_count_0.2_Q25_DP30_homo
 done
 
-# ---------------- 11. Annotation matching ---------------------
+# ---------------- Annotation matching ---------------------
 echo "Annotating variants..."
 ls *_specific | while read id; do
     base=${id%%.*}
@@ -214,7 +268,7 @@ ls *.corr | while read id; do
         > ${base}.anno
 done
 
-# ---------------- 12. Count annotation categories --------------
+# ---------------- Count annotation categories --------------
 echo "Counting annotation summaries..."
 ls *.anno | while read id; do
     base=${id%%.*}
@@ -222,12 +276,4 @@ ls *.anno | while read id; do
     awk -v id=${base} '{print id "\t" $0}' ${base}.3.AF0.2_Q25_DP30.count_homo \
         >> count/3_count_AF0.2_Q25_DP30_homo
 done
-
-ls *.anno | while read id; do
-    base=${id%%.*}
-    perl "$SCRIPT"/anno_CDS.pl "$id" ${base}.count_AF0.2_Q25_DP30_homo
-    awk -v id=${base} '{print id "\t" $0}' ${base}.count_AF0.2_Q25_DP30_homo \
-        >> count/CDS_count_AF0.2_Q25_DP30_homo
-done
-
 
