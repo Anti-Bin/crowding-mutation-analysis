@@ -26,11 +26,17 @@ THREADS=4
 # ------------------------ PREPARATION -------------------------
 mkdir -p 3bp_3homodel \
     3bp_3homodel/vcf_decom \
+    3bp_3homodel/vcf_decom/decom_format \
+    3bp_3homodel/vcf_decom/decom_format/count \
+    3bp_3homodel/vcf_decom/decom_format/anno  \
+    3bp_3homodel/vcf_decom/decom_format/anno/count  \
     3bp_3homodel/vcf_decom/uniq \
     3bp_3homodel/vcf_decom/uniq/homodel_uniq_format \
     3bp_3homodel/vcf_decom/uniq/homodel_uniq_format/merge \
     3bp_3homodel/vcf_decom/uniq/homodel_uniq_format/specific \
     3bp_3homodel/vcf_decom/uniq/homodel_uniq_format/specific/count \
+    3bp_3homodel/vcf_decom/uniq/homodel_uniq_format/specific/anno \
+    3bp_3homodel/vcf_decom/uniq/homodel_uniq_format/specific/anno/count
 
 # -------------------- Extract 3bp sequences ----------------
 echo "Extracting ±3bp FASTA sequences around variants..."
@@ -75,9 +81,63 @@ ls *.vcf | while read id; do
         vcf_decom/${id%%.*}.decompose.vcf
 done
 
+# ---------------- Export decomposed info -------------------
+echo "Exporting decomposed query info"
+cd vcf_decom
+for id in *.decompose_normalize.vcf; do
+    base=${id%%.*}
+    bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%QUAL\t%AF\t%DP\t%AO\t%TYPE\n' "$id" \
+        > decom_format/1.temp
+
+    perl -lane 'unless(/^#/){$F[7]=~s/(.*)TYPE=(\w*)(.*)/$2/; print uc($F[7])}' "$id" \
+        > decom_format/2.temp
+
+    paste -d"\t" decom_format/1.temp decom_format/2.temp \
+        > decom_format/${base}.formatted
+
+    rm decom_format/1.temp decom_format/2.temp
+done
+
+# ---------------- Count total filtered variants ------------
+echo "Counting filtered total variants"
+cd decom_format
+for id in *.formatted; do
+    base=${id%%.*}
+    echo -ne "${base}\t" >> count/maf0.5_Q25_DP30_total_variants
+    awk '{if ($6>=0.5 && $5>=25 && $7<=30 && $7>=5) print}' "$id" | wc -l \
+        >> count/maf0.5_Q25_DP30_total_variants
+done
+
+# ---------------- Correct index for annotation -------------
+for id in *.formatted; do
+    base=${id%%.*}
+    awk -F'\t' '{
+        if ($10=="DEL" || $10=="INS") print $0"\t"$2+1"\t"$10;
+        else if ($10=="SNP") print $0"\t"$2"\tSNV";
+        else print $0"\t"$2"\tMNV";
+    }' "$id" > anno/${base}.corr
+done
+
+# ---------------- Annotation of total variants -------------
+echo "Annotating total variants"
+cd anno
+for id in *.corr; do
+    base=${id%%.*}
+    awk -F'\t' 'FNR==NR {
+        a[$3"_"$4"_"$6]=$7"\t"$8"\t"$9"\t"$10; next
+    } ($1"_"$11"_"$12 in a) {print $0"\t"a[$1"_"$11"_"$12]}' \
+        "$ANNOTATION_DIR/${base}.decompose_normalize_annot.tsv" "$id" \
+        > ${base}.anno
+
+    perl "$SCRIPT"/anno_CDS.pl ${base}.anno ${base}.count_AF0.5_Q25_DP30_homo
+    awk -v id=${base} '{print id "\t" $0}' ${base}.count_AF0.5_Q25_DP30_homo \
+        >> count/CDS_count_AF0.5_Q25_DP30_homo
+done
+cd ..
+
 # ---------------- Unique variant filtering ------------------
 echo "Removing variants reported in corresponding F1..."
-cd vcf_decom
+cd ..
 ls cpr-4*.decompose_normalize.vcf | while read id; do
     base=${id%%.*}
     grep "^#" "$id" > uniq/${base}.3.uniq.homodel.vcf
@@ -141,19 +201,63 @@ ls *N2_*_10* | while read id; do
         > specific/${base}.homodel_uniq_specific
 done
 
-# ---------------- Count variant quality metrics -------------
-echo "Counting filtered variants..."
+# ---------------- Remove SNPs/MNPs overlapping INDELs ---------------------
+echo "Filtering quality and removing SNP/MNP overlapping INDELs..."
 cd specific
-ls *_specific | while read id; do
+for id in *.homodel_uniq_specific; do
+    base=${id%%.*}
+
+    awk '($6>=0.5 && $5>=25 && $7<=30 && $7>=5)' "$id" > ${base}.filtered_specific
+
+    awk '$10=="INS" || $10=="DEL"' ${base}.filtered_specific > ${base}.indel.txt
+    awk '$10=="SNP" || $10=="MNP"' ${base}.filtered_specific > ${base}.snpmnp.txt
+
+    awk 'BEGIN{OFS="\t"} 
+         $10=="DEL" {
+             len=length($3);
+             start=$2-1; end=start+len;
+             key=$1"_"$2"_"$3"_"$4;
+             print $1,start,end,key
+         } 
+         $10=="INS" {
+             start=$2-1; end=$2; 
+             key=$1"_"$2"_"$3"_"$4;
+             print $1,start,end,key
+         }' ${base}.indel.txt > ${base}.indel.bed
+
+    awk 'BEGIN{OFS="\t"}
+         $10=="SNP" {
+             start=$2-1; end=$2;
+             key=$1"_"$2"_"$3"_"$4;
+             print $1,start,end,key,$0
+         }
+         $10=="MNP" {
+             len=length($3);
+             start=$2-1; end=start+len;
+             key=$1"_"$2"_"$3"_"$4;
+             print $1,start,end,key,$0
+         }' ${base}.snpmnp.txt > ${base}.snpmnp.bed
+
+    bedtools intersect -a ${base}.snpmnp.bed -b ${base}.indel.bed -v > ${base}.snpmnp.nooverlap.bed
+
+    cut -f5- ${base}.snpmnp.nooverlap.bed > ${base}.snpmnp.nooverlap.txt
+    cat ${base}.indel.txt ${base}.snpmnp.nooverlap.txt | sort -k1,1 -k2,2n > ${base}.filtered_clean_specific
+
+    rm -f ${base}.indel.txt ${base}.snpmnp.txt ${base}.indel.bed ${base}.snpmnp.bed ${base}.snpmnp.nooverlap.bed ${base}.snpmnp.nooverlap.txt
+done
+
+# ----------------Count variant quality metrics -------------
+echo "Counting filtered variants..."
+ls *clean_specific | while read id; do
     base=${id%%.*}
     echo -ne "${base}\t" >> count/maf0.5_Q25_DP30_filter
     awk '{if ($6>=0.5 && $5>=25 && $7<=30 && $7>=5) {print}}' "$id" | wc -l \
         >> count/maf0.5_Q25_DP30_filter
 done
 
-# ---------------- Count variant types -----------------------
+# ----------------Count variant types -----------------------
 echo "Counting variant types..."
-ls *_specific | while read id; do
+ls *clean_specific | while read id; do
     base=${id%%.*}
     for j in SNP MNP DEL INS; do
         echo -ne "${base}\t${j}\t" >> count/type_count_0.5_Q25_DP30_homo
@@ -162,9 +266,9 @@ ls *_specific | while read id; do
     done
 done
 
-# ---------------- SNP subclassification --------------------
+# ----------------SNP subclassification --------------------
 echo "Counting six SNP substitution types..."
-for id in *_specific; do
+for id in *clean_specific; do
     base=${id%%.*}
     awk '{if ($10=="SNP" && $6>=0.5 && $5>=25 && $7<=30 && $7>=5) {print $0}}' "$id" \
         > ${base}.snp_0.5_Q25_DP30_homo
@@ -190,4 +294,30 @@ for id in *.snp_0.5_Q25_DP30_homo; do
         for (t in types) print id "\t" t "\t" types[t]
     }' "$id" >> count/SNP_change_count_0.5_Q25_DP30_homo
 done
+
+# ---------------- Annotation matching ---------------------
+echo "Annotating variants..."
+ls *_specific | while read id; do
+    base=${id%%.*}
+    awk -v FS='\t' '{if ($10=="DEL" || $10=="INS"){print $0"\t"$2+1"\t"$10} else if ($10=="SNP"){print $0"\t"$2"\t""SNV"} else{print $0"\t"$2"\t""MNV"}}' "$id" \
+        > anno/${base}.corr
+done
+
+cd anno
+ls *.corr | while read id; do
+    base=${id%%.*}
+    awk -v FS='\t' 'FNR==NR {a[$3"_"$4"_"$6]=$7"\t"$8"\t"$9"\t"$10; next} ($1"_"$11"_"$12 in a){print $0"\t"a[$1"_"$11"_"$12]}' \
+        "$ANNOTATION_DIR/${base}.decompose_normalize_annot.tsv" "$id" \
+        > ${base}.anno
+done
+
+# ---------------- Count annotation categories --------------
+echo "Counting annotation summaries..."
+ls *.anno | while read id; do
+    base=${id%%.*}
+    perl "$SCRIPT"/anno_genebody_AF05_Q25_DP30.pl "$id" ${base}.3.AF0.5_Q25_DP30.count_homo
+    awk -v id=${base} '{print id "\t" $0}' ${base}.3.AF0.5_Q25_DP30.count_homo \
+        >> count/3_count_AF0.5_Q25_DP30_homo
+done
+
 

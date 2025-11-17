@@ -9,7 +9,7 @@ my %h;
 while(<FH1>){
    chomp;
    my @a=split(/\t/);
-   if($a[5] >=0.2 && $a[4] >=25 && $a[6]<=30 && $a[6]>=5){
+   if($a[5] >=0.5 && $a[4] >=25 && $a[6]<=30 && $a[6]>=5){
      if(($a[14]=~ /CDS/) && ($a[14]=~ /,/)){
      	if ($a[15]=~/Missense/){
         	$h{Missense}=$h{Missense}+1;
