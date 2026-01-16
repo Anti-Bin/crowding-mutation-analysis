@@ -14,7 +14,7 @@ my $c;
 while(<FH1>){
    chomp;
    my @a=split(/\t/);
-   if($a[5] >=0.5 && $a[4] >=25 && $a[6] <=30 && $a[6] >=5){
+   if($a[5] >=0.2 && $a[4] >=25 && $a[6] <=30 && $a[6] >=5){
      if(($a[14]=~ /CDS/) or ($a[14]=~ /splice site/) or ($a[14]=~ /exon/)){
         $cds=$cds+1;
         next; 
