@@ -255,6 +255,18 @@ ls *clean_specific | while read id; do
         >> count/maf0.2_Q25_DP30_filter
 done
 
+# ----------------Count sum of mutant allele frequencies -----------------------
+echo "Calculating sum of allele frequencies (AF) for filtered variants..."
+ls *clean_specific | while read id; do
+    base=${id%%.*}
+    echo -ne "${base}\t" >> count/sum_of_AF
+    awk '{
+        if ($6>=0.2 && $5>=25 && $7<=30 && $7>=5)
+            sum += $6
+    }
+    END { print sum+0 }' "$id" >> count/sum_of_AF
+done
+
 # ----------------Count variant types -----------------------
 echo "Counting variant types..."
 ls *clean_specific | while read id; do
